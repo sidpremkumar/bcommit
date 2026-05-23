@@ -33,6 +33,13 @@ func PrintMessage(msg string) {
 	fmt.Println()
 }
 
+// PrintBranchName displays a generated branch name with formatting.
+func PrintBranchName(name string) {
+	fmt.Println()
+	cyan.Printf("  Branch: %s\n", name)
+	fmt.Println()
+}
+
 // PrintStatus prints a status line with a bullet.
 func PrintStatus(msg string) {
 	cyan.Printf("● %s\n", msg)

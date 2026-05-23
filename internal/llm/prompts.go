@@ -91,3 +91,35 @@ type FileSummary struct {
 	Filename string
 	Summary  string
 }
+
+const BranchNameSystemPrompt = `You generate short, descriptive git branch names from code diffs.
+
+RULES:
+- Output ONLY the branch name, nothing else
+- Use kebab-case: lowercase letters, numbers, and hyphens only
+- Keep it short: 2-5 words, max 50 characters
+- Be descriptive of the change: e.g. add-user-auth, fix-memory-leak, refactor-db-queries
+- No special characters beyond hyphens
+- No leading or trailing hyphens
+- Do NOT include a type prefix like feat/ or fix/ — just the descriptive name
+
+OUTPUT ONLY THE BRANCH NAME. No explanations, no quotes, no markdown.`
+
+// BuildBranchNamePrompt constructs the user prompt for branch name generation.
+func BuildBranchNamePrompt(diffContent, diffStat, hint string) string {
+	var b strings.Builder
+
+	b.WriteString("Generate a short, descriptive branch name for the following staged changes.\n")
+
+	if hint != "" {
+		fmt.Fprintf(&b, "\nAdditional context from the developer: %s\n", hint)
+	}
+
+	if diffStat != "" {
+		fmt.Fprintf(&b, "\nDiff statistics:\n%s\n", diffStat)
+	}
+
+	fmt.Fprintf(&b, "\n%s", diffContent)
+
+	return b.String()
+}

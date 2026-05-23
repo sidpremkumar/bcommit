@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 )
 
 // Config holds the global bcommit settings.
 type Config struct {
-	AutoCommit bool   `json:"auto_commit"`
-	Model      string `json:"model"`
+	AutoCommit   bool   `json:"auto_commit"`
+	Model        string `json:"model"`
+	BranchPrefix string `json:"branch_prefix,omitempty"`
 }
 
 // Default returns the default configuration.
@@ -82,8 +84,16 @@ func Set(key, value string) error {
 			return fmt.Errorf("model cannot be empty")
 		}
 		cfg.Model = value
+	case "branch_prefix":
+		if value != "" {
+			validPrefix := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+			if !validPrefix.MatchString(value) {
+				return fmt.Errorf("invalid branch_prefix: %q (only letters, numbers, dots, hyphens, underscores)", value)
+			}
+		}
+		cfg.BranchPrefix = value
 	default:
-		return fmt.Errorf("unknown config key: %q\n\nAvailable keys: auto_commit, model", key)
+		return fmt.Errorf("unknown config key: %q\n\nAvailable keys: auto_commit, model, branch_prefix", key)
 	}
 
 	return Save(cfg)

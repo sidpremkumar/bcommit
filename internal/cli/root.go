@@ -24,6 +24,7 @@ var (
 	flagType    string
 	flagHint    string
 	flagVerbose bool
+	flagBranch  bool
 )
 
 // rootCmd is the main bcommit command.
@@ -43,6 +44,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&flagType, "type", "t", "", "Force commit type (feat, fix, refactor, etc.)")
 	rootCmd.Flags().StringVar(&flagHint, "hint", "", "Provide additional context for the commit message")
 	rootCmd.Flags().BoolVarP(&flagVerbose, "verbose", "v", false, "Show tier selection, token counts, timing")
+	rootCmd.Flags().BoolVarP(&flagBranch, "branch", "b", false, "Generate a branch name, create it, and commit")
 }
 
 // Execute runs the root command.
@@ -116,6 +118,7 @@ func run(cmd *cobra.Command, args []string) error {
 	procCfg := diff.ProcessorConfig{
 		Tier1Max: diff.DefaultTier1Max,
 		Tier2Max: diff.DefaultTier2Max,
+		Tier3Max: diff.DefaultTier3Max,
 		Verbose:  flagVerbose,
 	}
 
@@ -126,6 +129,44 @@ func run(cmd *cobra.Command, args []string) error {
 
 	if flagVerbose {
 		fmt.Printf("  Estimated tokens: %d, Tier: %d\n", result.Tokens, result.Tier)
+	}
+
+	// Branch generation mode
+	if flagBranch {
+		ui.PrintStatus("Generating branch name...")
+		branchName, err := client.GenerateBranchName(result.Content, diffStat, flagHint)
+		if err != nil {
+			return err
+		}
+
+		// Apply prefix if configured
+		if cfg.BranchPrefix != "" {
+			branchName = cfg.BranchPrefix + "/" + branchName
+		}
+
+		// Print-only mode: just show the branch name
+		if flagPrint {
+			fmt.Println(branchName)
+			return nil
+		}
+
+		// Auto-commit mode: skip interactive prompt for branch name
+		if flagCommit || cfg.AutoCommit {
+			branchName, err = ensureUniqueBranch(branchName)
+			if err != nil {
+				return err
+			}
+			if err := git.CreateAndCheckoutBranch(branchName); err != nil {
+				return err
+			}
+			ui.PrintSuccess(fmt.Sprintf("Switched to new branch: %s", branchName))
+		} else {
+			// Interactive mode for branch name
+			branchName, err = branchInteractiveLoop(branchName, client, result.Content, diffStat, cfg)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	// Generate commit message
@@ -191,6 +232,72 @@ func interactiveLoop(message string, client *llm.Client, diffContent, diffStat s
 			return nil
 		}
 	}
+}
+
+func branchInteractiveLoop(branchName string, client *llm.Client, diffContent, diffStat string, cfg config.Config) (string, error) {
+	for {
+		ui.PrintBranchName(branchName)
+
+		action := ui.PromptAction()
+		switch action {
+		case ui.ActionAccept:
+			branchName, err := ensureUniqueBranch(branchName)
+			if err != nil {
+				return "", err
+			}
+			if err := git.CreateAndCheckoutBranch(branchName); err != nil {
+				return "", err
+			}
+			ui.PrintSuccess(fmt.Sprintf("Switched to new branch: %s", branchName))
+			return branchName, nil
+
+		case ui.ActionEdit:
+			edited, err := ui.EditMessage(branchName)
+			if err != nil {
+				ui.PrintWarning(fmt.Sprintf("Edit failed: %v", err))
+				continue
+			}
+			branchName = edited
+
+		case ui.ActionRegenerate:
+			ui.PrintStatus("Regenerating branch name...")
+			newName, err := client.GenerateBranchName(diffContent, diffStat, flagHint)
+			if err != nil {
+				ui.PrintWarning(fmt.Sprintf("Regeneration failed: %v", err))
+				continue
+			}
+			if cfg.BranchPrefix != "" {
+				newName = cfg.BranchPrefix + "/" + newName
+			}
+			branchName = newName
+
+		case ui.ActionQuit:
+			fmt.Println("Aborted.")
+			return "", fmt.Errorf("aborted")
+		}
+	}
+}
+
+func ensureUniqueBranch(name string) (string, error) {
+	exists, err := git.BranchExists(name)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return name, nil
+	}
+
+	for i := 2; i <= 99; i++ {
+		candidate := fmt.Sprintf("%s-%d", name, i)
+		exists, err := git.BranchExists(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not find a unique branch name for %q", name)
 }
 
 func firstLine(s string) string {

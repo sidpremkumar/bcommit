@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -44,12 +45,51 @@ func GetDiffStat() (string, error) {
 }
 
 // Commit creates a git commit with the given message.
+// Stdout/stderr are streamed to the user's terminal so that pre-commit hook
+// output (progress, errors, fixups) is visible live.
 func Commit(message string) error {
 	cmd := exec.Command("git", "commit", "-m", message)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("git commit failed (exit code %d) — see output above (likely a pre-commit hook)", exitErr.ExitCode())
+		}
+		return fmt.Errorf("git commit failed: %w", err)
+	}
+	return nil
+}
+
+// GetCurrentBranch returns the name of the current branch.
+func GetCurrentBranch() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current branch: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// BranchExists returns true if a local branch with the given name exists.
+func BranchExists(name string) (bool, error) {
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
+	err := cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check branch existence: %w", err)
+	}
+	return true, nil
+}
+
+// CreateAndCheckoutBranch creates a new branch and switches to it.
+func CreateAndCheckoutBranch(name string) error {
+	cmd := exec.Command("git", "checkout", "-b", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create branch: %s", strings.TrimSpace(string(out)))
 	}
 	return nil
 }

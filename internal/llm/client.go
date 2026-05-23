@@ -16,6 +16,14 @@ import (
 // DefaultModel is the recommended model for commit message generation.
 const DefaultModel = "qwen2.5-coder:3b"
 
+// LLM call timeouts. Small local models can stall on pathological inputs;
+// these bounds let us fail fast and fall back instead of hanging the CLI.
+const (
+	commitMessageTimeout = 3 * time.Minute
+	branchNameTimeout    = 90 * time.Second
+	summarizeTimeout     = 60 * time.Second
+)
+
 // Client wraps the Ollama API for commit message generation.
 type Client struct {
 	client        *api.Client
@@ -64,16 +72,122 @@ func (c *Client) GenerateCommitMessage(diffContent, diffStat, hint, forceType st
 		},
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), commitMessageTimeout)
+	defer cancel()
+
 	var result string
-	err := c.client.Chat(context.Background(), req, func(resp api.ChatResponse) error {
+	err := c.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 		result = resp.Message.Content
 		return nil
 	})
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("LLM request timed out after %s — try a smaller diff, a larger model, or use --hint", commitMessageTimeout)
+		}
 		return "", fmt.Errorf("LLM request failed: %w", err)
 	}
 
 	return cleanResponse(result), nil
+}
+
+// GenerateBranchName sends the diff to the LLM and returns a branch name.
+func (c *Client) GenerateBranchName(diffContent, diffStat, hint string) (string, error) {
+	userPrompt := BuildBranchNamePrompt(diffContent, diffStat, hint)
+
+	messages := []api.Message{
+		{Role: "system", Content: BranchNameSystemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
+
+	req := &api.ChatRequest{
+		Model:    c.model,
+		Messages: messages,
+		Stream:   ptrBool(false),
+		Options: map[string]any{
+			"temperature": c.temperature,
+			"num_ctx":     c.numCtx,
+			"num_predict": 64,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), branchNameTimeout)
+	defer cancel()
+
+	var result string
+	err := c.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+		result = resp.Message.Content
+		return nil
+	})
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("branch-name generation timed out after %s", branchNameTimeout)
+		}
+		return "", fmt.Errorf("LLM request failed: %w", err)
+	}
+
+	cleaned := cleanBranchName(result)
+	if cleaned == "" {
+		return "", fmt.Errorf("LLM produced an empty branch name — try providing a --hint")
+	}
+	return cleaned, nil
+}
+
+// cleanBranchName sanitizes LLM output into a valid git branch name.
+func cleanBranchName(raw string) string {
+	s := strings.TrimSpace(raw)
+
+	// Remove markdown fences
+	if strings.HasPrefix(s, "```") {
+		lines := strings.Split(s, "\n")
+		var cleaned []string
+		for _, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				continue
+			}
+			cleaned = append(cleaned, line)
+		}
+		s = strings.Join(cleaned, "\n")
+		s = strings.TrimSpace(s)
+	}
+
+	// Remove surrounding quotes
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
+		s = s[1 : len(s)-1]
+	}
+
+	// Take only the first line
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx]
+	}
+	s = strings.TrimSpace(s)
+
+	// Lowercase
+	s = strings.ToLower(s)
+
+	// Replace spaces and underscores with hyphens
+	s = strings.ReplaceAll(s, " ", "-")
+	s = strings.ReplaceAll(s, "_", "-")
+
+	// Remove anything that isn't a-z, 0-9, or hyphen
+	branchCharRe := regexp.MustCompile(`[^a-z0-9-]`)
+	s = branchCharRe.ReplaceAllString(s, "")
+
+	// Collapse consecutive hyphens
+	multiHyphen := regexp.MustCompile(`-{2,}`)
+	s = multiHyphen.ReplaceAllString(s, "-")
+
+	// Trim leading/trailing hyphens
+	s = strings.Trim(s, "-")
+
+	// Truncate to 50 chars at a hyphen boundary
+	if len(s) > 50 {
+		s = s[:50]
+		if idx := strings.LastIndexByte(s, '-'); idx > 0 {
+			s = s[:idx]
+		}
+	}
+
+	return s
 }
 
 // SummarizeFileDiff asks the LLM to summarize a single file's changes (Tier 3).
@@ -96,12 +210,18 @@ func (c *Client) SummarizeFileDiff(filename, fileDiff string) (string, error) {
 		},
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), summarizeTimeout)
+	defer cancel()
+
 	var result string
-	err := c.client.Chat(context.Background(), req, func(resp api.ChatResponse) error {
+	err := c.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 		result = resp.Message.Content
 		return nil
 	})
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("summarization timed out for %s after %s", filename, summarizeTimeout)
+		}
 		return "", fmt.Errorf("summarization failed for %s: %w", filename, err)
 	}
 
