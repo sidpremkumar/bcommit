@@ -85,7 +85,7 @@ func PrintProgress(msg string) {
 type Action int
 
 const (
-	ActionAccept     Action = iota
+	ActionAccept Action = iota
 	ActionEdit
 	ActionRegenerate
 	ActionQuit
@@ -114,8 +114,8 @@ func PromptAction() Action {
 	}
 }
 
-// EditMessage opens the user's editor with the message pre-filled and returns the edited result.
-func EditMessage(msg string) (string, error) {
+// resolveEditor returns the user's preferred editor ($EDITOR → $VISUAL → vi).
+func resolveEditor() string {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = os.Getenv("VISUAL")
@@ -123,21 +123,35 @@ func EditMessage(msg string) (string, error) {
 	if editor == "" {
 		editor = "vi"
 	}
+	return editor
+}
 
-	tmpDir := os.TempDir()
-	tmpFile := filepath.Join(tmpDir, "bcommit-msg.txt")
-	if err := os.WriteFile(tmpFile, []byte(msg), 0644); err != nil {
+// LaunchEditor opens the user's editor on an existing file path, wiring stdio to
+// the terminal, and waits for it to exit. Edits persist to the given path.
+func LaunchEditor(path string) error {
+	cmd := exec.Command(resolveEditor(), path)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("editor failed: %w", err)
+	}
+	return nil
+}
+
+// EditBuffer opens the user's editor on a temp file pre-filled with content and
+// returns the edited result. filenameHint names the temp file (its suffix lets
+// editors choose syntax highlighting). If allowEmpty is false, an empty result
+// is an error.
+func EditBuffer(content, filenameHint string, allowEmpty bool) (string, error) {
+	tmpFile := filepath.Join(os.TempDir(), filenameHint)
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	defer os.Remove(tmpFile)
 
-	cmd := exec.Command(editor, tmpFile)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("editor failed: %w", err)
+	if err := LaunchEditor(tmpFile); err != nil {
+		return "", err
 	}
 
 	edited, err := os.ReadFile(tmpFile)
@@ -146,9 +160,46 @@ func EditMessage(msg string) (string, error) {
 	}
 
 	result := strings.TrimSpace(string(edited))
-	if result == "" {
-		return "", fmt.Errorf("commit message is empty after editing")
+	if result == "" && !allowEmpty {
+		return "", fmt.Errorf("content is empty after editing")
+	}
+	return result, nil
+}
+
+// EditMessage opens the user's editor with the message pre-filled and returns the edited result.
+func EditMessage(msg string) (string, error) {
+	return EditBuffer(msg, "bcommit-msg.txt", false)
+}
+
+// EditPR opens a single editor buffer containing the title on the first line, a
+// blank line, then the body. It returns the parsed (title, body).
+func EditPR(title, body string) (newTitle, newBody string, err error) {
+	buf := title + "\n\n" + body + "\n"
+	edited, err := EditBuffer(buf, "bcommit-pr.md", false)
+	if err != nil {
+		return "", "", err
 	}
 
-	return result, nil
+	lines := strings.Split(edited, "\n")
+	i := 0
+	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
+		i++
+	}
+	if i >= len(lines) {
+		return "", "", fmt.Errorf("PR title is empty after editing")
+	}
+	newTitle = strings.TrimSpace(lines[i])
+	newBody = strings.TrimSpace(strings.Join(lines[i+1:], "\n"))
+	return newTitle, newBody, nil
+}
+
+// PrintPR displays a PR title and body with formatting.
+func PrintPR(title, body string) {
+	fmt.Println()
+	green.Printf("  %s\n", title)
+	fmt.Println()
+	for _, line := range strings.Split(body, "\n") {
+		dim.Printf("  %s\n", line)
+	}
+	fmt.Println()
 }

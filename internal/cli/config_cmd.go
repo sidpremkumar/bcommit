@@ -42,6 +42,15 @@ func runConfig(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Printf("  %-16s %s\n", bold.Sprint("auto_commit:"), formatBool(cfg.AutoCommit))
 	fmt.Printf("  %-16s %s\n", bold.Sprint("model:"), cfg.Model)
+	if cfg.BranchPrefix != "" {
+		fmt.Printf("  %-16s %s\n", bold.Sprint("branch_prefix:"), cfg.BranchPrefix)
+	}
+	if cfg.DefaultBase != "" {
+		fmt.Printf("  %-16s %s\n", bold.Sprint("default_base:"), cfg.DefaultBase)
+	}
+	if cfg.PRReviewers != "" {
+		fmt.Printf("  %-16s %s\n", bold.Sprint("pr_reviewers:"), cfg.PRReviewers)
+	}
 	fmt.Println()
 	dim.Printf("  Config file: %s\n", config.ConfigPath())
 	fmt.Println()

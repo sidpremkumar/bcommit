@@ -22,6 +22,7 @@ const (
 	commitMessageTimeout = 3 * time.Minute
 	branchNameTimeout    = 90 * time.Second
 	summarizeTimeout     = 60 * time.Second
+	prDescriptionTimeout = 3 * time.Minute
 )
 
 // Client wraps the Ollama API for commit message generation.
@@ -130,6 +131,114 @@ func (c *Client) GenerateBranchName(diffContent, diffStat, hint string) (string,
 		return "", fmt.Errorf("LLM produced an empty branch name — try providing a --hint")
 	}
 	return cleaned, nil
+}
+
+// GeneratePRDescription returns a PR title and markdown body. It runs in two
+// steps: first it generates the body in the author's voice, then it derives the
+// title from that body. Splitting the work keeps the title from collapsing into
+// the body's first heading (e.g. "## Summary") and lets each step use a prompt
+// tuned to its job.
+func (c *Client) GeneratePRDescription(commits []string, processedDiff, diffStat, customContext, hint, diffLabel, author string) (title, body string, err error) {
+	body, err = c.generatePRBody(commits, processedDiff, diffStat, customContext, hint, diffLabel, author)
+	if err != nil {
+		return "", "", err
+	}
+	if body == "" {
+		return "", "", fmt.Errorf("LLM produced an empty PR description — try providing a --hint")
+	}
+
+	title, err = c.generatePRTitle(body, commits)
+	if err != nil {
+		return "", "", err
+	}
+	if title == "" {
+		return "", "", fmt.Errorf("LLM produced an empty PR title — try providing a --hint")
+	}
+	return title, body, nil
+}
+
+// generatePRBody generates the markdown PR body.
+func (c *Client) generatePRBody(commits []string, processedDiff, diffStat, customContext, hint, diffLabel, author string) (string, error) {
+	messages := []api.Message{
+		{Role: "system", Content: BuildPRBodySystemPrompt(author)},
+		{Role: "user", Content: BuildPRBodyPrompt(commits, processedDiff, diffStat, customContext, hint, diffLabel)},
+	}
+
+	req := &api.ChatRequest{
+		Model:    c.model,
+		Messages: messages,
+		Stream:   ptrBool(false),
+		Options: map[string]any{
+			"temperature": c.temperature,
+			"num_ctx":     c.numCtx,
+			"num_predict": 512,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), prDescriptionTimeout)
+	defer cancel()
+
+	var result string
+	err := c.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+		result = resp.Message.Content
+		return nil
+	})
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("PR generation timed out after %s — try a smaller diff or a larger model", prDescriptionTimeout)
+		}
+		return "", fmt.Errorf("LLM request failed: %w", err)
+	}
+
+	return cleanResponse(result), nil
+}
+
+// generatePRTitle derives a one-line PR title from the generated body.
+func (c *Client) generatePRTitle(body string, commits []string) (string, error) {
+	messages := []api.Message{
+		{Role: "system", Content: PRTitleSystemPrompt},
+		{Role: "user", Content: BuildPRTitlePrompt(body, commits)},
+	}
+
+	req := &api.ChatRequest{
+		Model:    c.model,
+		Messages: messages,
+		Stream:   ptrBool(false),
+		Options: map[string]any{
+			"temperature": c.temperature,
+			"num_ctx":     c.numCtx,
+			"num_predict": 64,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), prDescriptionTimeout)
+	defer cancel()
+
+	var result string
+	err := c.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+		result = resp.Message.Content
+		return nil
+	})
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("PR title generation timed out after %s", prDescriptionTimeout)
+		}
+		return "", fmt.Errorf("LLM request failed: %w", err)
+	}
+
+	return firstLine(cleanResponse(result)), nil
+}
+
+// firstLine returns the first non-empty line of s, trimmed. The title prompt asks
+// for a single line, but small models sometimes emit a stray blank or trailing
+// note; this guards against that.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // cleanBranchName sanitizes LLM output into a valid git branch name.
