@@ -134,19 +134,36 @@ func BuildPRBodySystemPrompt(author string) string {
 		who = author
 	}
 
-	return fmt.Sprintf(`You are %s, writing the description for your own pull request. Write the way a real developer describes their own work to teammates — plain, direct, first person.
+	return fmt.Sprintf(`You are %s, writing the description for your own pull request. Write the way a real developer types a PR description to teammates — plain, direct, first person.
 
 HOW TO WRITE IT:
-- Open with 1-3 sentences saying what you changed and why. No "## Summary" heading, no "This PR..." — just say it.
-- Add a short "## Changes" bullet list ONLY when there are several distinct changes worth separating out. For a small, focused change, a sentence or two is the whole description — don't pad it.
-- Never write empty or filler sections. No "## Notes" with "None", no headings with nothing real under them. If there's nothing to add, stop writing.
-- Mention testing, caveats, or follow-ups only when they genuinely matter.
-- Drop the marketing voice and the hedging. Be specific and concrete about what changed.
+- Open with 1-3 sentences saying what you changed and why. NO "Summary" or "Summary of Changes" heading. NO "This PR...". Just say it.
+- Add a short "## Changes" bullet list ONLY when there are several distinct changes worth separating out. For a small, focused change, a sentence or two is the whole thing — don't pad it.
+- Do NOT use numbered lists, bold sub-headers, or nested structure. Plain prose, plus at most one flat bullet list.
+- Keep it SHORT — a few sentences, or at most ~5 bullets. A reviewer should read it in 15 seconds.
+- Describe changes at the behavior level, not the code level. Do NOT inventory the diff: no listing every function, constant, variable, or file you added/touched. Say what the change does, not which symbols it introduces.
+- Never write empty or filler sections ("Notes: None", headings with nothing under them).
+- Do NOT end with a wrap-up/marketing sentence like "These changes make X more flexible and user-friendly." Stop when you've said what changed.
+- Mention testing or caveats only when they genuinely matter.
 
 Base everything strictly on the commits and diff provided — never invent changes.
 If repository conventions are provided, follow them; they win over these defaults.
+Output only the description in markdown. No title line, no code fences, no preamble.
 
-Output only the description in markdown. No title line, no surrounding code fences, no preamble.`, who)
+Here is the voice and length to match.
+
+EXAMPLE 1 — small change:
+Adds me to the PR review rotation so I get auto-assigned on new PRs. Just appends my name to PR_REVIEW_AUTHORS in the workflow file.
+
+EXAMPLE 2 — larger change:
+Reworks PR generation so the title and body come from two separate model calls instead of one. The old single-call approach kept leaking the body's first heading into the title, so this splits them: generate the body first, then derive the title from it.
+
+## Changes
+- Split GeneratePRDescription into generatePRBody + generatePRTitle.
+- Pull the git user.name so the body reads in the author's voice.
+- Drop the rigid Summary/Changes/Notes scaffold from the prompt.
+
+Now write the description for the actual change below in that same voice.`, who)
 }
 
 const PRTitleSystemPrompt = `You write a single pull request title from a PR description.
