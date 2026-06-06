@@ -14,6 +14,8 @@ type Config struct {
 	AutoCommit   bool   `json:"auto_commit"`
 	Model        string `json:"model"`
 	BranchPrefix string `json:"branch_prefix,omitempty"`
+	DefaultBase  string `json:"default_base,omitempty"` // override PR base-branch detection
+	PRReviewers  string `json:"pr_reviewers,omitempty"` // comma-separated, passed to gh --reviewer
 }
 
 // Default returns the default configuration.
@@ -31,6 +33,12 @@ func configDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "bcommit")
+}
+
+// Dir returns the bcommit config directory (e.g. ~/.config/bcommit).
+// Exported so other packages (e.g. the context store) can derive paths from it.
+func Dir() string {
+	return configDir()
 }
 
 // ConfigPath returns the path to the config file.
@@ -92,8 +100,12 @@ func Set(key, value string) error {
 			}
 		}
 		cfg.BranchPrefix = value
+	case "default_base":
+		cfg.DefaultBase = value
+	case "pr_reviewers":
+		cfg.PRReviewers = value
 	default:
-		return fmt.Errorf("unknown config key: %q\n\nAvailable keys: auto_commit, model, branch_prefix", key)
+		return fmt.Errorf("unknown config key: %q\n\nAvailable keys: auto_commit, model, branch_prefix, default_base, pr_reviewers", key)
 	}
 
 	return Save(cfg)

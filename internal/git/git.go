@@ -107,3 +107,122 @@ func GetRecentCommits(n int) ([]string, error) {
 	}
 	return strings.Split(raw, "\n"), nil
 }
+
+// remoteRefExists returns true if a remote-tracking ref (e.g. origin/main) exists.
+func remoteRefExists(ref string) bool {
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/remotes/"+ref)
+	return cmd.Run() == nil
+}
+
+// DetectBaseBranch returns the repository's base branch (e.g. "main" or "master").
+//
+// It first asks git for the remote's default branch via
+// `git symbolic-ref refs/remotes/origin/HEAD` (set by clone / `git remote set-head`).
+// If that is unavailable it falls back to the first of main/master that exists
+// as a remote-tracking ref or a local branch.
+func DetectBaseBranch() (string, error) {
+	cmd := exec.Command("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	if out, err := cmd.Output(); err == nil {
+		ref := strings.TrimSpace(string(out)) // e.g. "origin/main"
+		if i := strings.IndexByte(ref, '/'); i >= 0 {
+			ref = ref[i+1:]
+		}
+		if ref != "" {
+			return ref, nil
+		}
+	}
+
+	for _, candidate := range []string{"main", "master"} {
+		if remoteRefExists("origin/" + candidate) {
+			return candidate, nil
+		}
+		if exists, _ := BranchExists(candidate); exists {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("could not detect a base branch (no main/master found) — pass --base")
+}
+
+// GetDiffBetweenBranches returns the diff that head introduces relative to base.
+// It uses the three-dot range (base...head) so the result reflects only head's
+// own changes — the same set GitHub shows in a pull request.
+func GetDiffBetweenBranches(base, head string, contextLines int) (string, error) {
+	cmd := exec.Command("git", "diff", fmt.Sprintf("-U%d", contextLines), base+"..."+head)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to diff %s...%s: %w", base, head, err)
+	}
+	return string(out), nil
+}
+
+// GetDiffStatBetweenBranches returns the --stat summary of base...head.
+func GetDiffStatBetweenBranches(base, head string) (string, error) {
+	cmd := exec.Command("git", "diff", "--stat", base+"..."+head)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to diff stat %s...%s: %w", base, head, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// GetCommitsBetweenBranches returns the subjects of commits in head but not base
+// (the two-dot range base..head), newest first.
+func GetCommitsBetweenBranches(base, head string) ([]string, error) {
+	cmd := exec.Command("git", "log", base+".."+head, "--pretty=format:%s")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list commits %s..%s: %w", base, head, err)
+	}
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return nil, nil
+	}
+	return strings.Split(raw, "\n"), nil
+}
+
+// GetRemoteURL returns the URL configured for the named remote (e.g. "origin").
+func GetRemoteURL(remote string) (string, error) {
+	cmd := exec.Command("git", "remote", "get-url", remote)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("no %q remote configured", remote)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// GetUserName returns the configured git user.name, or "" if it isn't set.
+func GetUserName() string {
+	cmd := exec.Command("git", "config", "user.name")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// HasUpstream reports whether the current branch has a configured upstream.
+func HasUpstream() (bool, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	err := cmd.Run()
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check upstream: %w", err)
+	}
+	return true, nil
+}
+
+// PushCurrentBranch pushes the current branch to origin and sets upstream tracking.
+// Stdout/stderr are streamed so push progress and errors are visible live.
+func PushCurrentBranch() error {
+	cmd := exec.Command("git", "push", "-u", "origin", "HEAD")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git push failed: %w", err)
+	}
+	return nil
+}
