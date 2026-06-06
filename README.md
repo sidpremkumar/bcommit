@@ -1,6 +1,6 @@
 # bcommit
 
-A command-line tool that generates git commit messages using a local LLM. It reads your staged diff, sends it to a model running on [Ollama](https://ollama.com), and gives you a conventional commit message — no API keys, no cloud, everything stays on your machine.
+A command-line tool that generates git commit messages **and pull requests** using a local LLM. It reads your staged diff (or your whole branch), sends it to a model running on [Ollama](https://ollama.com), and gives you a conventional commit message or a ready-to-open PR — no API keys, no cloud, everything stays on your machine.
 
 ## How it works
 
@@ -70,6 +70,7 @@ From the interactive prompt you can:
 -m, --model string  Use a different model (e.g. qwen2.5-coder:7b)
 -t, --type string   Force a commit type (feat, fix, refactor, etc.)
     --hint string   Give the model extra context about what you're doing
+-b, --branch        Generate a branch name, create it, then commit onto it
 -v, --verbose       Show token counts, tier selection, and timing info
 ```
 
@@ -105,6 +106,69 @@ Just print the message (pipe it somewhere, use it in a script, etc.):
 bcommit -p
 ```
 
+## Pull requests
+
+`bcommit pr` writes the title and body of a pull request from your branch, then opens it with the [GitHub CLI](https://cli.github.com).
+
+It:
+
+1. Figures out the base branch — auto-detected from `origin/HEAD`, or set it with `--base` or the `default_base` config key
+2. Collects the commits and diff between the base and your current branch
+3. Folds in any per-repo context you've saved (see below) and runs the diff through the same small/medium/large tiering used for commits
+4. Generates a title and description with your local Ollama model
+5. Pushes the branch if it has no upstream, then creates the PR via `gh pr create`
+
+You'll need the [GitHub CLI](https://cli.github.com) installed and authenticated (`gh auth login`) — bcommit checks this up front, before doing any LLM work. The branch diff is also scanned for likely secrets, and you'll be warned before anything is created.
+
+```
+$ bcommit pr
+● Analyzing main...add-pr-command (3 commit(s))
+ internal/cli/pr_cmd.go      | 240 +++++++++++++++++++++++++++++
+ internal/gh/gh.go           |  96 +++++++++++
+ ...
+● Generating PR description...
+
+  feat: add `bcommit pr` for LLM-generated pull requests
+
+  ## Summary
+  Adds a `pr` subcommand that diffs the branch against its base,
+  gathers commits, and generates a title and description...
+
+[a]ccept  [e]dit  [r]egenerate  [q]uit: a
+● Pushing branch to origin...
+✓ Created PR: https://github.com/sidpremkumar/bcommit/pull/2
+```
+
+The interactive prompt works just like the commit flow:
+
+- **a** — accept, push the branch, and open the PR
+- **e** — edit the title and body in your `$EDITOR`
+- **r** — throw it away and generate a new one
+- **q** — quit without opening a PR
+
+### Flags
+
+```
+    --base string   Base branch to target (default: auto-detected)
+-p, --print         Print the title and body only (no PR created)
+    --dry-run       Do everything except creating the PR
+    --draft         Open the PR as a draft
+-m, --model string  Use a different model (e.g. qwen2.5-coder:7b)
+    --hint string   Give the model extra context about the change
+-v, --verbose       Show token counts and tier selection
+```
+
+### Per-repo context
+
+PRs often need context that isn't in the diff — coding conventions, links to tickets, what reviewers tend to care about. `bcommit context` opens a per-repo file in your `$EDITOR` that gets fed to the model as high-priority guidance whenever you generate a PR for that repo:
+
+```bash
+bcommit context          # edit this repo's context
+bcommit context --path   # print the file path instead of opening it
+```
+
+The context is keyed by the repo's remote URL and stored centrally under `~/.config/bcommit/context/` — it's never committed to the repo. Lines starting with `#` are treated as comments and stripped before the model sees them.
+
 ## Configuration
 
 bcommit stores its config at `~/.config/bcommit/config.json` (or `$XDG_CONFIG_HOME/bcommit/config.json`).
@@ -120,14 +184,17 @@ Change a setting:
 ```bash
 bcommit config set model qwen2.5-coder:7b
 bcommit config set auto_commit true
-bcommit config set copy_clipboard false
+bcommit config set default_base develop
+bcommit config set pr_reviewers alice,bob
 ```
 
-| Key              | Default             | Description                              |
-|------------------|---------------------|------------------------------------------|
-| `model`          | `qwen2.5-coder:3b`  | Ollama model to use                      |
-| `auto_commit`    | `false`              | Skip the interactive prompt and commit   |
-| `copy_clipboard` | `true`               | Copy the generated message to clipboard  |
+| Key             | Default            | Description                                            |
+|-----------------|--------------------|--------------------------------------------------------|
+| `model`         | `qwen2.5-coder:3b` | Ollama model to use                                    |
+| `auto_commit`   | `false`            | Skip the interactive prompt and commit                 |
+| `branch_prefix` | _(none)_           | Prefix for branch names generated by `bcommit -b`      |
+| `default_base`  | _(auto-detected)_  | Base branch `bcommit pr` targets                       |
+| `pr_reviewers`  | _(none)_           | Comma-separated reviewers passed to `gh --reviewer`    |
 
 ## Default model
 
